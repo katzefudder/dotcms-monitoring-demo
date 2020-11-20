@@ -1,0 +1,5 @@
+---
+startDelaySeconds: 0
+hostPort: dotcms:9010
+username: 
+password:

@@ -1,0 +1,209 @@
+version: '3.5'
+
+networks:
+  db_net:
+  es_net:
+  monitoring:
+
+volumes:
+  cms-shared:
+  esdata:
+
+services:
+  elasticsearch:
+    build: ./elasticsearch
+    container_name: elasticsearch
+    environment:
+      - cluster.name=odfe-cluster
+      - node.name=odfe-node1
+      - discovery.seed_hosts=localhost
+      - cluster.initial_master_nodes=odfe-node1
+      - data
+      - bootstrap.memory_lock=true 
+      - "ES_JAVA_OPTS=-Xmx1G " 
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+    networks:
+      - es_net
+      - monitoring
+
+  kibana:
+    image: amazon/opendistro-for-elasticsearch-kibana:1.9.0
+    container_name: kibana
+    ports:
+      - 5601:5601
+    environment:
+      ELASTICSEARCH_URL: https://elasticsearch:9200
+      ELASTICSEARCH_HOSTS: https://elasticsearch:9200
+    networks:
+      - es_net
+
+  nginx:
+    build: ./nginx
+    container_name: nginx
+    depends_on:
+      - dotcms
+    volumes:
+      - ./nginx/nginx.conf:/usr/local/openresty/nginx/conf/nginx.conf
+      - ./nginx/app.conf:/etc/nginx/conf.d/app.conf
+      - ./nginx/lua/:/etc/nginx/lua/
+      - ./logs/nginx:/var/log/nginx
+    ports:
+      - "80:80"
+      - "9104:9100"
+      - "9145:9145"
+    networks:
+      - es_net
+      - monitoring
+
+  dotcms:
+    build: ./dotcms
+    environment:
+      "CMS_HEAP_SIZE": '1g'
+      "PROVIDER_DB_DNSNAME": 'postgres'
+      "PROVIDER_DB_DRIVER": 'POSTGRES'
+      "PROVIDER_ELASTICSEARCH_ENDPOINTS": 'https://elasticsearch:9200'
+      "ES_ADMIN_PASSWORD": 'admin'
+      "CMS_JAVA_OPTS": '-XX:+PrintFlagsFinal -Djava.rmi.server.hostname=dotcms -Dcom.sun.management.jmxremote.port=9010 -Dcom.sun.management.jmxremote.ssl=false -Dcom.sun.management.jmxremote.authenticate=false'
+    depends_on:
+      - elasticsearch
+      - postgres
+    volumes:
+      - cms-shared:/data/shared
+      - ./dotcms/plugins:/plugins/static
+      #- ./dotcms-license.zip:/data/shared/assets/license.zip
+      - ./logs/dotcms:/srv/dotserver/tomcat-8.5.32/logs
+    ports:
+      - "8080"
+      - "9100"
+    networks:
+      - db_net
+      - es_net
+      - monitoring
+
+  filebeat:
+    build: ./filebeat
+    container_name: filebeat
+    entrypoint: "filebeat -e -strict.perms=false"
+    volumes:
+      - ./filebeat/config/filebeat.yml:/usr/share/filebeat/filebeat.yml
+      - ./logs/dotcms:/var/log/dotcms
+      - ./logs/nginx:/var/log/nginx
+    networks:
+      - es_net
+    depends_on:
+      - dotcms
+
+  postgres:
+    build: ./postgres
+    container_name: postgres
+    command: postgres -c 'max_connections=500' -c 'shared_buffers=128MB'
+    environment:
+        "POSTGRES_USER": 'dotcmsdbuser'
+        "POSTGRES_PASSWORD": 'password'
+        "POSTGRES_DB": 'dotcms'
+    ports:
+      - "5432:5432"
+      - "9103:9100"
+    networks:
+      - db_net
+      - monitoring
+
+  prometheus:
+    image: prom/prometheus
+    container_name: prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.min-block-duration=2h"
+      - "--storage.tsdb.max-block-duration=2h"
+    volumes:
+      - "./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml"
+      - "./prometheus/alerts.yml:/etc/prometheus/alerts.yml"
+    ports:
+      - "9090:9090"
+    networks:
+      - monitoring
+
+  grafana:
+    build: ./grafana
+    container_name: grafana
+    environment:
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel,grafana-worldmap-panel
+    depends_on:
+      - prometheus
+    volumes:
+       - ./grafana:/var/lib/grafana
+    ports:
+      - "3000:3000"
+      - "9102:9100"
+      - "9100:9100"
+    networks:
+      - monitoring
+
+  alertmanager:
+    image: prom/alertmanager:v0.12.0
+    container_name: alertmanager
+    depends_on:
+      - prometheus
+    volumes:
+      - ./alertmanager/:/etc/alertmanager/
+    restart: always
+    command:
+      - '-config.file=/etc/alertmanager/alertmanager.yml'
+      - '-storage.path=/alertmanager'
+    ports:
+      - "9093:9093"
+    networks:
+      - monitoring
+
+  jmx-exporter:
+    image: sscaling/jmx-prometheus-exporter
+    container_name: jmx-exporter
+    volumes:
+      - ./jmx-prometheus-exporter/config.yml:/opt/jmx_exporter/config.yml
+    ports:
+      - "5556:5556"
+    networks:
+      - monitoring
+
+  elasticsearch-exporter:
+    image: justwatch/elasticsearch_exporter:1.1.0
+    container_name: elasticsearch-exporter
+    command:
+     - '--es.uri=https://admin:admin@elasticsearch:9200'
+     - '--es.ssl-skip-verify'
+    restart: always
+    ports:
+      - "9114:9114"
+    networks:
+      - es_net
+      - monitoring
+
+  mailhog:
+    image: mailhog/mailhog
+    container_name: mailhog
+    depends_on:
+            - alertmanager
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+    networks:
+      - monitoring
+
+  db-exporter:
+    image: wrouesnel/postgres_exporter
+    container_name: db-exporter
+    environment:
+      - "DATA_SOURCE_NAME=postgresql://dotcmsdbuser:password@postgres:5432/dotcms?sslmode=disable"
+    ports:
+      - "9187:9187"
+    networks:
+      - db_net
+      - monitoring

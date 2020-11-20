@@ -1,0 +1,50 @@
+filebeat.inputs:
+  - type: log
+    enabled: true
+    paths:
+      - /var/log/dotcms/*.log
+
+  - type: log
+    paths:
+      - /var/log/nginx/access.log
+    document_type: nginx-access
+    fields:
+      nginx: true
+
+  - type: log
+    paths:
+      - /var/log/nginx/error.log
+    document_type: nginx-error
+    fields:
+      nginx: true
+
+processors:
+  - add_host_metadata:
+      netinfo.enabled: true
+      cache.ttl: 5m
+
+#filebeat.modules:
+#  - module: nginx
+#    access:
+#      enabled: true
+#      var.paths: ["/var/log/nginx/access.log"]
+#    error:
+#      enabled: true
+#      var.paths: ["/var/log/nginx/error.log"]
+
+output.elasticsearch:
+  hosts: ["elasticsearch:9200"]
+  protocol: https
+  ssl.verification_mode: "none"
+  username: "admin"
+  password: "admin"
+  index: "dotcms-%{+yyyy.MM.dd}"
+
+setup.template.name: "dotcms"
+setup.template.pattern: "dotcms-*"
+setup.ilm.enabled: false
+
+setup.kibana:
+  host: "http://kibana:5601"
+  username: "admin"
+  password: "admin"
